@@ -133,31 +133,40 @@ function parseResponse(text: string): Json {
 }
 
 function apiError(status: number, payload: Json, creds: Credentials): AxiError {
+  const detail = apiErrorDetail(payload, creds);
+  const withDetail = (message: string) => detail ? `${message}: ${detail}` : message;
   if (status === 401) {
-    return new AxiError("Bitbucket authentication failed", "AUTH_ERROR", [
+    return new AxiError(withDetail("Bitbucket authentication failed"), "AUTH_ERROR", [
       "The stored API token was rejected; run `bitbucket-axi config set` to update it",
     ]);
   }
   if (status === 403) {
-    return new AxiError("Bitbucket denied this operation", "PERMISSION_ERROR", [
-      "Grant the API token the repository, pull request, or pipeline scope this command needs",
+    return new AxiError(withDetail("Bitbucket denied this operation"), "PERMISSION_ERROR", [
+      detail
+        ? "Check the API token scope and the authenticated account's permission for this resource"
+        : "Grant the API token the repository, pull request, or pipeline scope this command needs",
     ]);
   }
   if (status === 404) {
-    return new AxiError("Bitbucket resource not found", "NOT_FOUND", [
+    return new AxiError(withDetail("Bitbucket resource not found"), "NOT_FOUND", [
       "Check the repository selector and resource identifier",
     ]);
   }
 
-  const rawDetail =
-    isObject(payload) && isObject(payload["error"]) && typeof payload["error"]["message"] === "string"
-      ? payload["error"]["message"]
-      : "";
-  const detail = redact(rawDetail, creds);
   return new AxiError(
     `Bitbucket API request failed (${status})${detail ? `: ${detail}` : ""}`,
     "API_ERROR",
   );
+}
+
+function apiErrorDetail(payload: Json, creds: Credentials): string {
+  const error = isObject(payload) && isObject(payload["error"]) ? payload["error"] : undefined;
+  const rawDetail = typeof error?.["detail"] === "string"
+    ? error["detail"]
+    : typeof error?.["message"] === "string"
+      ? error["message"]
+      : "";
+  return redact(rawDetail, creds);
 }
 
 function redact(message: string, creds: Credentials): string {

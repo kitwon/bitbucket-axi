@@ -183,6 +183,55 @@ describe("Bitbucket commands", () => {
     expect(String(url)).toBe("https://api.bitbucket.org/2.0/repositories/acme/widgets");
   });
 
+  it("sends PR description updates as PUT JSON with the stored API credential", async () => {
+    fetchMock.mockResolvedValue(response({ id: 42, description: "Updated safely" }));
+    await apiCommand([
+      "PUT",
+      "/repositories/{workspace}/{repo}/pullrequests/42",
+      "--field",
+      "description=Updated safely",
+    ], ctx);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe(
+      "https://api.bitbucket.org/2.0/repositories/acme/widgets/pullrequests/42",
+    );
+    expect(init?.method).toBe("PUT");
+    expect(init?.headers).toMatchObject({
+      Accept: "application/json",
+      Authorization: `Basic ${Buffer.from("agent@example.com:test-token").toString("base64")}`,
+      "Content-Type": "application/json",
+    });
+    expect(JSON.parse(String(init?.body))).toEqual({ description: "Updated safely" });
+  });
+
+  it("preserves sanitized details when Bitbucket denies a PR description update", async () => {
+    fetchMock.mockResolvedValue(response({
+      error: {
+        message: "Forbidden",
+        detail: "Missing pull request write scope for agent@example.com with token test-token",
+      },
+    }, 403));
+
+    let caught: unknown;
+    try {
+      await apiCommand([
+        "PUT",
+        "/repositories/{workspace}/{repo}/pullrequests/42",
+        "--field",
+        "description=Updated safely",
+      ], ctx);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({ code: "PERMISSION_ERROR" });
+    const message = (caught as Error).message;
+    expect(message).toContain("Missing pull request write scope");
+    expect(message).not.toContain("agent@example.com");
+    expect(message).not.toContain("test-token");
+  });
+
   it("home reveals the total when the dashboard preview is truncated", async () => {
     fetchMock.mockImplementation((url) => {
       const u = String(url);
