@@ -36,7 +36,7 @@ export function pipelineListRow(raw: JsonObject, extras: string[]): JsonObject {
     if (extra === "created") row[extra] = text(raw, "created_on");
     if (extra === "commit") row[extra] = nestedText(raw, "target", "commit", "hash").slice(0, 12);
     if (extra === "completed") row[extra] = text(raw, "completed_on") || "pending";
-    if (extra === "duration") row[extra] = number(raw, "build_seconds_used") ?? 0;
+    if (extra === "duration") row[extra] = number(raw, "duration_in_seconds") ?? 0;
     if (extra === "url") row[extra] = nestedText(raw, "links", "html", "href");
   }
   return row;
@@ -52,7 +52,7 @@ export function pipelineDetail(raw: JsonObject): JsonObject {
     creator: actor(raw["creator"]),
     created: text(raw, "created_on"),
     completed: text(raw, "completed_on") || "pending",
-    duration_seconds: number(raw, "build_seconds_used") ?? 0,
+    duration_seconds: number(raw, "duration_in_seconds") ?? 0,
     url: nestedText(raw, "links", "html", "href"),
   });
 }

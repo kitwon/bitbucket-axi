@@ -176,6 +176,24 @@ describe("Bitbucket commands", () => {
     });
   });
 
+  it("reports pipeline wall time, not build seconds", async () => {
+    const raw = {
+      uuid: "{ee14c0ee-f8d6-4f39-a26e-e2246e871244}",
+      build_number: 113124,
+      state: { result: { name: "SUCCESSFUL" } },
+      target: { ref_name: "main", commit: { hash: "30fb5e80fbe294130977c7f4442739ee22a61952" } },
+      duration_in_seconds: 1279,
+      build_seconds_used: 731,
+    };
+    fetchMock.mockResolvedValue(response(raw));
+    const viewed = await pipelineCommand(["view", "{ee14c0ee-f8d6-4f39-a26e-e2246e871244}"], ctx);
+    expect(viewed["pipeline"]).toMatchObject({ duration_seconds: 1279 });
+
+    fetchMock.mockResolvedValue(response({ size: 1, values: [raw] }));
+    const listed = await pipelineCommand(["list", "--fields", "duration"], ctx);
+    expect((listed["pipelines"] as unknown[])[0]).toMatchObject({ duration: 1279 });
+  });
+
   it("keeps raw API requests on api.bitbucket.org", async () => {
     fetchMock.mockResolvedValue(response({ ok: true }));
     await apiCommand(["/repositories/{workspace}/{repo}"], ctx);
