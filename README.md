@@ -66,7 +66,7 @@ When omitted, `bitbucket-axi` scans git remotes for a `bitbucket.org` repository
 | `pr create` | Create a pull request |
 | `pipeline list` | List pipeline runs |
 | `pipeline view <uuid>` | Show one pipeline run |
-| `pipeline run` | Trigger a branch or custom pipeline |
+| `pipeline run` | Trigger a branch or custom pipeline, with optional variables |
 | `api [method] <path>` | Call any Bitbucket Cloud REST API v2.0 path |
 
 Run `bitbucket-axi --help` or `bitbucket-axi <command> --help` for the complete, concise flag reference.
@@ -93,6 +93,7 @@ bitbucket-axi pr create --title "Fix auth" --source fix/auth --destination main 
 bitbucket-axi pipeline list --fields commit,url
 bitbucket-axi pipeline run --branch main
 bitbucket-axi pipeline run --branch main --custom "Deploy production"
+bitbucket-axi pipeline run --branch main --custom "Deploy production" --variable STAGE=staging --secured-variable DEPLOY_TOKEN=...
 bitbucket-axi api /repositories/{workspace}/{repo}/refs/branches
 bitbucket-axi api POST /repositories/{workspace}/{repo}/pipelines --field 'target={"type":"pipeline_ref_target","ref_type":"branch","ref_name":"main"}'
 ```

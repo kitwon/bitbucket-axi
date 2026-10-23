@@ -158,6 +158,76 @@ describe("Bitbucket commands", () => {
     expect(output["pull_request"]).toMatchObject({ id: 7, state: "open" });
   });
 
+  it("triggers a custom pipeline with plain and secured variables", async () => {
+    fetchMock.mockResolvedValue(response({
+      uuid: "{12345678-abcd}",
+      build_number: 13,
+      state: { name: "PENDING" },
+      target: { ref_name: "main" },
+      variables: [{ key: "SECRET", value: "hunter2", secured: true }],
+    }, 201));
+    const output = await pipelineCommand([
+      "run",
+      "--branch", "main",
+      "--custom", "deploy-to-staging",
+      "--variable", "STAGE=dev",
+      "--variable", "TOKENISH=a=b=",
+      "--variable", "EMPTY=",
+      "--secured-variable", "SECRET=hunter2",
+    ], ctx);
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      target: {
+        type: "pipeline_ref_target",
+        ref_type: "branch",
+        ref_name: "main",
+        selector: { type: "custom", pattern: "deploy-to-staging" },
+      },
+      variables: [
+        { key: "STAGE", value: "dev" },
+        { key: "TOKENISH", value: "a=b=" },
+        { key: "EMPTY", value: "" },
+        { key: "SECRET", value: "hunter2", secured: true },
+      ],
+    });
+    expect(encode(output)).not.toContain("hunter2");
+  });
+
+  it("keeps the plain pipeline request unchanged without variables", async () => {
+    fetchMock.mockResolvedValue(response({ uuid: "{12345678-abcd}", build_number: 14 }, 201));
+    await pipelineCommand(["run", "--branch", "main"], ctx);
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(String(init?.body))).toEqual({
+      target: { type: "pipeline_ref_target", ref_type: "branch", ref_name: "main" },
+    });
+  });
+
+  it("rejects a malformed variable without echoing or calling the API", async () => {
+    let caught: unknown;
+    try {
+      await pipelineCommand(["run", "--branch", "main", "--variable", "hunter2"], ctx);
+    } catch (error) {
+      caught = error;
+    }
+    expect((caught as { code: string }).code).toBe("VALIDATION_ERROR");
+    expect((caught as Error).message).toBe("invalid pipeline variable");
+    expect(JSON.stringify(caught)).not.toContain("hunter2");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid variable name and a repeated variable", async () => {
+    await expect(
+      pipelineCommand(["run", "--branch", "main", "--variable", "1BAD=value"], ctx),
+    ).rejects.toThrow("invalid pipeline variable");
+    await expect(
+      pipelineCommand([
+        "run", "--branch", "main", "--variable", "STAGE=dev", "--secured-variable", "STAGE=dev",
+      ], ctx),
+    ).rejects.toThrow("pipeline variable STAGE may only be given once");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("renders a compact pipeline list", async () => {
     fetchMock.mockResolvedValue(response({ size: 1, values: [{
       uuid: "{12345678-abcd}",
