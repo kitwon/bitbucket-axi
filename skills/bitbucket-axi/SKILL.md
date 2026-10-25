@@ -23,4 +23,4 @@ Get every command, flag, and workflow from the live CLI - it is the single sourc
 - `npx -y bitbucket-axi --help` - global usage
 - `npx -y bitbucket-axi <command> --help` - per-command usage
 
-API credentials are stored in the OS credential manager. If the CLI reports that credentials are missing, run `npx -y bitbucket-axi config set`; for automation, provide the account email and pipe the token to `npx -y bitbucket-axi config set --email <email> --token-stdin`.
+API credentials are stored in the OS credential manager. If the CLI reports that credentials are missing, run `npx -y bitbucket-axi config set`; for automation, provide the account email and pipe the token to `npx -y bitbucket-axi config set --email <email> --token-stdin`. If it instead reports that the login keychain is locked, the stored credential is intact and must not be re-entered - the user has to unlock the keychain in their own terminal with `security unlock-keychain ~/Library/Keychains/login.keychain-db` (no `-p`/`-u`).

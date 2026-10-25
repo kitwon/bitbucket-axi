@@ -15,6 +15,13 @@ vi.mock("@napi-rs/keyring", () => ({
   Entry: vi.fn(() => keyring),
 }));
 
+// The credential module probes macOS `security` to tell a locked keychain from an
+// absent entry. Every test drives that probe explicitly so the real keychain and
+// its lock state are never consulted.
+const childProcess = vi.hoisted(() => ({ spawnSync: vi.fn() }));
+
+vi.mock("node:child_process", () => childProcess);
+
 import { basicAuthHeader, bitbucketRequest, validateCredentials } from "../src/client.js";
 import { configClear, configSet, configStatus, readTokenFromStdin } from "../src/commands/index.js";
 import { clearCredentials, loadCredentials, saveCredentials } from "../src/credentials.js";
@@ -30,6 +37,55 @@ function stdinInput(value: string): PassThrough {
   const input = new PassThrough();
   input.end(value);
   return input;
+}
+
+function probe(said: "unlocked" | "locked"): {
+  status: number;
+  stdout: string;
+  stderr: string;
+} {
+  const path = "<home>/Library/Keychains/login.keychain-db";
+  return said === "locked"
+    ? { status: 36, stdout: "", stderr: `security: SecKeychainCopySettings "${path}": User interaction is not allowed.\n` }
+    : { status: 0, stdout: `Keychain "${path}" no-timeout\n`, stderr: "" };
+}
+
+const realPlatform = process.platform;
+
+function stubPlatform(platform: string): void {
+  Object.defineProperty(process, "platform", { value: platform, configurable: true });
+}
+
+beforeEach(() => {
+  childProcess.spawnSync.mockReset();
+  childProcess.spawnSync.mockReturnValue(probe("unlocked"));
+});
+
+afterEach(() => {
+  Object.defineProperty(process, "platform", { value: realPlatform, configurable: true });
+});
+
+// Stands in for a terminal: bytes arriving while raw mode is off are echoed to the
+// visible transcript by the tty driver, and not while raw mode is on.
+class EchoingTerminal extends PassThrough {
+  isTTY = true;
+  raw = false;
+
+  constructor(private readonly transcript: PassThrough) {
+    super();
+  }
+
+  setRawMode(mode: boolean): this {
+    this.raw = mode;
+    return this;
+  }
+
+  // The echo decision happens at the instant the bytes arrive, before any reader
+  // sees them; delivery to the prompt is deferred so a pending question can attach.
+  paste(text: string): void {
+    if (!this.raw) this.transcript.write(text);
+    setImmediate(() => this.push(text));
+  }
 }
 
 function terminalInput(
@@ -297,6 +353,194 @@ describe("config clear", () => {
     keyring.deleteCredential.mockReturnValue(false);
     const output = await configClear([]);
     expect(output).toMatchObject({ config: { status: "already clear" } });
+  });
+});
+
+describe("locked credential store", () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock.mockReset();
+    keyring.getPassword.mockReset();
+    keyring.setPassword.mockReset();
+    stubPlatform("darwin");
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("reports a locked keychain as an unlocked store, not as a missing credential", () => {
+    keyring.getPassword.mockReturnValue(null);
+    childProcess.spawnSync.mockReturnValue(probe("locked"));
+
+    let caught: unknown;
+    try {
+      loadCredentials();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(AxiError);
+    expect((caught as AxiError).code).toBe("CREDENTIAL_STORE_ERROR");
+    expect((caught as AxiError).message).not.toContain("not configured");
+    const help = (caught as AxiError).suggestions.join("\n");
+    expect(help).toContain("security unlock-keychain ~/Library/Keychains/login.keychain-db");
+    expect(help).toContain("without -p or -u");
+    expect(childProcess.spawnSync).toHaveBeenCalledWith(
+      "security",
+      ["show-keychain-info", expect.stringContaining("login.keychain-db")],
+      expect.objectContaining({ timeout: 2000 }),
+    );
+  });
+
+  it("keeps a genuinely absent credential absent on an unlocked keychain", async () => {
+    keyring.getPassword.mockReturnValue(null);
+    childProcess.spawnSync.mockReturnValue(probe("unlocked"));
+
+    expect(loadCredentials()).toBeNull();
+    const toon = encode(await configStatus([]));
+    expect(toon).toContain("ready: false");
+    expect(toon).toContain("config set");
+  });
+
+  it("does not probe or fail when the credential is readable", () => {
+    keyring.getPassword.mockReturnValue(JSON.stringify({ email: "you@example.com", token: "secret-token" }));
+    expect(loadCredentials()).toEqual({ email: "you@example.com", token: "secret-token" });
+    expect(childProcess.spawnSync).not.toHaveBeenCalled();
+  });
+
+  it("guides an unlock when the store throws an interaction error on read", () => {
+    keyring.getPassword.mockImplementation(() => {
+      throw new Error("Platform failure: User interaction is not allowed.");
+    });
+    expect(() => loadCredentials()).toThrow(/login keychain is locked/);
+    expect(childProcess.spawnSync).not.toHaveBeenCalled();
+  });
+
+  it("guides an unlock when the store throws an interaction error on write", () => {
+    keyring.setPassword.mockImplementation(() => {
+      throw new Error("Platform failure: User interaction is not allowed.");
+    });
+    let caught: unknown;
+    try {
+      saveCredentials({ email: "you@example.com", token: "secret-token" });
+    } catch (error) {
+      caught = error;
+    }
+    expect((caught as AxiError).code).toBe("CREDENTIAL_STORE_ERROR");
+    expect((caught as AxiError).suggestions.join("\n")).toContain("security unlock-keychain");
+  });
+
+  it("keeps an unrelated store failure generic instead of claiming a lock", () => {
+    keyring.getPassword.mockImplementation(() => {
+      throw new Error("secret-service: D-Bus connection failed");
+    });
+    let caught: unknown;
+    try {
+      loadCredentials();
+    } catch (error) {
+      caught = error;
+    }
+    expect((caught as AxiError).code).toBe("CREDENTIAL_STORE_ERROR");
+    expect((caught as AxiError).message).toBe("Could not access the operating system credential store");
+    expect((caught as AxiError).suggestions.join("\n")).not.toContain("unlock-keychain");
+  });
+
+  it("does not probe on platforms without the macOS keychain probe", () => {
+    stubPlatform("linux");
+    keyring.getPassword.mockReturnValue(null);
+    expect(loadCredentials()).toBeNull();
+    expect(childProcess.spawnSync).not.toHaveBeenCalled();
+  });
+
+  it("makes no API call and reports the locked store", async () => {
+    keyring.getPassword.mockReturnValue(null);
+    childProcess.spawnSync.mockReturnValue(probe("locked"));
+    await expect(bitbucketRequest("user")).rejects.toThrow(/login keychain is locked/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+function echoProtectedSet(
+  answers: Array<[prompt: string, answer: string]>,
+): { stdin: EchoingTerminal; stderr: PassThrough; transcript: () => string } {
+  const stderr = new PassThrough();
+  Object.assign(stderr, { isTTY: true });
+  const stdin = new EchoingTerminal(stderr);
+  let seen = "";
+  let next = 0;
+  stderr.on("data", (chunk) => {
+    seen += chunk.toString();
+    const answer = answers[next];
+    // Answer inside the prompt write itself: the tightest paste race no human can beat.
+    if (answer && seen.includes(answer[0])) {
+      next++;
+      stdin.paste(`${answer[1]}\n`);
+    }
+  });
+  return { stdin, stderr, transcript: () => seen };
+}
+
+describe("hidden token prompt", () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock.mockReset();
+    keyring.setPassword.mockReset();
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("never echoes a token pasted the instant the prompt appears", async () => {
+    fetchMock.mockResolvedValue(response({ values: [{ email: "you@example.com", is_primary: true }] }));
+    const { stdin, stderr, transcript } = echoProtectedSet([
+      ["Bitbucket API token:", "secret-token"],
+    ]);
+
+    const output = await configSet(["--email", "you@example.com"], { stdin, stderr });
+
+    expect(transcript()).toContain("Bitbucket API token:");
+    expect(transcript()).not.toContain("secret-token");
+    expect(keyring.setPassword).toHaveBeenCalledWith(
+      JSON.stringify({ email: "you@example.com", token: "secret-token" }),
+    );
+    expect(output).toMatchObject({ config: { status: "configured" } });
+  });
+
+  it("restores the terminal and closes the prompt line after a failed validation", async () => {
+    fetchMock.mockResolvedValue(response({ error: { message: "bad credentials" } }, 401));
+    const { stdin, stderr, transcript } = echoProtectedSet([
+      ["Bitbucket API token:", "bad-token"],
+    ]);
+
+    await expect(configSet(["--email", "you@example.com"], { stdin, stderr })).rejects.toThrow(
+      "Bitbucket rejected the email or API token",
+    );
+
+    expect(stdin.raw).toBe(false);
+    expect(transcript()).not.toContain("bad-token");
+    expect(transcript().endsWith("\n")).toBe(true);
+    expect(keyring.setPassword).not.toHaveBeenCalled();
+  });
+
+  it("leaves the terminal untouched for --token-stdin automation", async () => {
+    fetchMock.mockResolvedValue(response({ values: [{ email: "you@example.com" }] }));
+    const stderr = new PassThrough();
+    Object.assign(stderr, { isTTY: true });
+    const stdin = new EchoingTerminal(stderr);
+    let prompts = "";
+    stderr.on("data", (chunk) => { prompts += chunk.toString(); });
+
+    const output = await configSet(["--email", "you@example.com", "--token-stdin"], {
+      stdin: stdinInput("piped-token"),
+      stderr,
+    });
+
+    expect(output).toMatchObject({ config: { status: "configured" } });
+    expect(prompts).toBe("");
+    expect(keyring.setPassword).toHaveBeenCalledWith(
+      JSON.stringify({ email: "you@example.com", token: "piped-token" }),
+    );
   });
 });
 

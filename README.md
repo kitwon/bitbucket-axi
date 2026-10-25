@@ -39,6 +39,14 @@ bitbucket-axi config clear    # removes the stored credential (idempotent)
 
 Every network-backed command requires a stored credential. If none is configured, the command makes no API call and returns an auth-required result pointing at `bitbucket-axi config set`.
 
+If macOS reports `The login keychain is locked, so the stored credential cannot be read`, the token is still stored and must not be re-entered. Unlock the keychain yourself in the terminal you are using, which works over SSH because it reads the password there without echoing it:
+
+```sh
+security unlock-keychain ~/Library/Keychains/login.keychain-db
+```
+
+Do not add `-p` (it exposes the password in the process list) or `-u` (it asks for a GUI prompt, which an SSH session cannot show).
+
 ## Select a repository
 
 Pass `-R/--repo <workspace/repo>` after the command:
@@ -54,7 +62,7 @@ When omitted, `bitbucket-axi` scans git remotes for a `bitbucket.org` repository
 | Command | Purpose |
 | --- | --- |
 | `config set [--email <email>]` | Interactively validate and store API credentials in the OS keychain |
-| `config status` | Show the configured email and credential readiness |
+| `config status` | Show the configured email and credential readiness (a locked keychain is reported as such, not as missing) |
 | `config clear` | Remove the stored credential |
 | `config git set --token-stdin` | Validate and store a separate Git HTTPS token for the credential helper |
 | `config git status` | Show whether the Git HTTPS token is configured |

@@ -1,3 +1,6 @@
+import { spawnSync } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { Entry } from "@napi-rs/keyring";
 import { AxiError } from "axi-sdk-js";
 
@@ -56,10 +59,16 @@ function readStored(e: Entry): Credentials | null {
   try {
     raw = e.getPassword();
   } catch (error) {
+    if (isLockedError(error)) throw lockedStoreError();
     if (isNoEntryError(error)) return null;
     throw keyringError(error);
   }
-  if (!raw) return null;
+  // A locked login keychain is reported as an empty read, not as an error, so a
+  // null result alone would claim "no credential" for a stored token.
+  if (!raw) {
+    if (loginKeychainLocked()) throw lockedStoreError();
+    return null;
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -86,6 +95,7 @@ function writeStored(e: Entry, creds: Credentials): void {
   try {
     e.setPassword(JSON.stringify(creds));
   } catch (error) {
+    if (isLockedError(error)) throw lockedStoreError();
     throw keyringError(error);
   }
 }
@@ -103,6 +113,39 @@ function removeStored(e: Entry): void {
 function isNoEntryError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /no (matching )?entry|not found|no credential/i.test(message);
+}
+
+const LOCKED_RE = /interaction is not allowed|errSecInteractionNotAllowed/i;
+
+function isLockedError(error: unknown): boolean {
+  return LOCKED_RE.test(error instanceof Error ? error.message : String(error));
+}
+
+// macOS `security` refuses to read settings from a locked keychain unless it can
+// prompt, which an SSH session cannot do; that refusal is the only non-destructive
+// signal that separates "locked" from "no entry".
+function loginKeychainLocked(): boolean {
+  if (process.platform !== "darwin") return false;
+  // shortcut: on a desktop session this probe may raise a keychain dialog; gate it
+  // on a non-GUI session if that ever proves disruptive.
+  const keychain = join(homedir(), "Library", "Keychains", "login.keychain-db");
+  const result = spawnSync("security", ["show-keychain-info", keychain], {
+    encoding: "utf8",
+    timeout: 2000,
+  });
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  return result.status !== 0 && LOCKED_RE.test(output);
+}
+
+function lockedStoreError(): AxiError {
+  return new AxiError(
+    "The login keychain is locked, so the stored credential cannot be read",
+    "CREDENTIAL_STORE_ERROR",
+    [
+      "Unlock it yourself in a terminal: `security unlock-keychain ~/Library/Keychains/login.keychain-db`",
+      "Type the keychain password there without -p or -u, then rerun the command; the stored Bitbucket token is reused, so do not re-enter it",
+    ],
+  );
 }
 
 function keyringError(_error: unknown): AxiError {

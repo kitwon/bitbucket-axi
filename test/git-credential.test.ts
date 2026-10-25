@@ -22,6 +22,12 @@ vi.mock("@napi-rs/keyring", () => ({
   ),
 }));
 
+// An empty read makes the credential module probe macOS `security` for a locked
+// keychain. Pin that probe to "unlocked" so no test ever consults the real one.
+vi.mock("node:child_process", () => ({
+  spawnSync: vi.fn(() => ({ status: 0, stdout: "Keychain no-timeout\n", stderr: "" })),
+}));
+
 import {
   configGit,
   configGitClear,

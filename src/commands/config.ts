@@ -215,8 +215,10 @@ async function readInteractiveLine(
   const readlineOutput = hidden
     ? new Writable({ write(_chunk, _encoding, done) { done(); } })
     : output;
-  if (hidden) output.write(prompt);
+  // createInterface enables raw mode before returning. Printing the prompt first
+  // let a token pasted at once be echoed by the terminal before that happened.
   const readline = createInterface({ input, output: readlineOutput, terminal: true });
+  if (hidden) output.write(prompt);
   try {
     return await readline.question(hidden ? "" : prompt);
   } finally {
