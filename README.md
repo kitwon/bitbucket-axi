@@ -113,17 +113,34 @@ List commands default to compact fields. Add supported columns with `--fields`. 
 Bitbucket Cloud's public REST API cannot upload images to a pull request: attachments exist only on Bitbucket's internal PR activity endpoint, and the request to expose them is still open ([BCLOUD-23909](https://jira.atlassian.com/browse/BCLOUD-23909), *Gathering Interest*; fetching them is [BCLOUD-22105](https://jira.atlassian.com/browse/BCLOUD-22105)). PR descriptions are Markdown, so the supported route is to upload the file to the repository's [Downloads](https://developer.atlassian.com/cloud/bitbucket/rest/api-group-downloads/) and reference that URL:
 
 ```sh
+# 1. upload (multipart form field `files`; needs write:repository:bitbucket)
 bitbucket-axi api POST /repositories/{workspace}/{repo}/downloads --file files=./screenshot.png
+
+# 2. read the current description, add your section to it, write the whole body back
+bitbucket-axi pr view 42 --full
 bitbucket-axi api PUT /repositories/{workspace}/{repo}/pullrequests/42 --field description="$(cat body.md)"
+
+# 3. read the saved description back
+bitbucket-axi pr view 42 --full
 ```
 
-with this line inside `body.md` (any workspace member who can read the repository loads it through their Bitbucket session):
+with this line inside `body.md`:
 
 ```md
 ![screenshot](https://bitbucket.org/<workspace>/<repo>/downloads/screenshot.png)
 ```
 
-`--file` sends `multipart/form-data` with the file's bytes unchanged and needs a token with the `write:repository:bitbucket` scope. The form field must be `files` for downloads, and a `GET`/`HEAD` request cannot carry files. Uploading a name that already exists replaces its bytes in place, so use a distinct name per image. Downloads require no PR-specific permission, but they outlive the PR: delete them with `bitbucket-axi api DELETE /repositories/{workspace}/{repo}/downloads/<name>`. Viewers of a private repository must be signed in with read access (an anonymous request is rejected with 401), while a public repository makes the image world-readable.
+An upload never edits a pull request: until step 2 writes a description that references the file, the PR shows no image. Take the body you patch from a fresh `pr view <id> --full` read - a read without `--full` truncates long descriptions, and someone else may have edited the body since your last look. `"$(cat body.md)"` arrives as a single argument, so quotes, backticks and `$` in the body stay literal.
+
+`--file` sends `multipart/form-data` with the file's bytes unchanged. The form field must be `files` for downloads, and a `GET`/`HEAD` request cannot carry files. Uploading a name that already exists replaces its bytes in place, so give every image a name unique to its pull request and revision. Reference the stable `https://bitbucket.org/...` URL: a Downloads request answers `302` to a short-lived signed storage URL, which must never end up in the Markdown.
+
+Verifying an image is three claims, and each one needs its own evidence:
+
+1. The file is uploaded and its bytes are what you sent - download it and compare a checksum. The CLI prints text, so it has no byte download of its own; use a client that follows the redirect without handing your API token to that storage host.
+2. The saved description contains the references you meant - `pr view <id> --full` for the text, and `rendered.description.html` from `bitbucket-axi api GET /repositories/{workspace}/{repo}/pullrequests/<id>` for one `<img>` per reference.
+3. A browser signed in with repository read access displays each image. Only this step shows what a viewer sees: the API token and the browser session are different credentials, so rendered `<img>` tags plus an anonymous `401` do not establish it.
+
+Downloads need no pull-request permission, and they outlive the PR while the description keeps depending on them. Delete one with `bitbucket-axi api DELETE /repositories/{workspace}/{repo}/downloads/<name>` only once nothing references it; finishing or merging the PR is not on its own a reason to delete. Viewers of a private repository must be signed in with read access (an anonymous request is rejected with 401), while a public repository makes the image world-readable.
 
 ## Development
 

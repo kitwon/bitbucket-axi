@@ -15,8 +15,9 @@ examples[4]:
   bitbucket-axi api GET /user
   bitbucket-axi api GET /repositories/{workspace}/{repo}/refs/branches --field pagelen=10
   bitbucket-axi api POST /repositories/{workspace}/{repo}/downloads --file files=./screenshot.png
-notes[2]:
+notes[3]:
   Image bytes are sent unchanged; use a distinct file name per image because re-uploading a name replaces it.
+  An upload never edits a pull request; patch the description that references the file separately.
   Reference an uploaded image from PR markdown as https://bitbucket.org/{workspace}/{repo}/downloads/<name>
 `;
 
