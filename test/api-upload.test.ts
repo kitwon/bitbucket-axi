@@ -81,6 +81,31 @@ describe("api --file uploads", () => {
     expect(part.name).not.toContain(dir);
   });
 
+  it("reports the HTTP status when a successful upload has no response body", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 201 }));
+    const path = imageAt("screenshot.png");
+
+    const result = await apiCommand(
+      ["POST", "/repositories/{workspace}/{repo}/downloads", "--file", `files=${path}`],
+      ctx,
+    );
+
+    expect(result).toEqual({ http_status: 201, api_response: null });
+  });
+
+  it("leaves a non-empty API response shape alone", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const result = await apiCommand(["/repositories/{workspace}/{repo}"], ctx);
+
+    expect(result).toEqual({ api_response: { ok: true } });
+  });
+
   it("rejects an unreadable file before calling Bitbucket", async () => {
     await expect(
       apiCommand(["POST", "/repositories/{workspace}/{repo}/downloads", "--file", `files=${join(dir, "missing.png")}`], ctx),

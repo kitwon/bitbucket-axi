@@ -28,10 +28,24 @@ export function basicAuthHeader(email: string, token: string): string {
   return `Basic ${Buffer.from(`${email}:${token}`).toString("base64")}`;
 }
 
+export interface BitbucketResponse {
+  status: number;
+  payload: Json;
+}
+
 export async function bitbucketRequest(
   path: string,
   options: RequestOptions = {},
 ): Promise<Json> {
+  return (await bitbucketResponse(path, options)).payload;
+}
+
+// Same request path, plus the status, for callers that must report success when
+// a successful response carries no body at all.
+export async function bitbucketResponse(
+  path: string,
+  options: RequestOptions = {},
+): Promise<BitbucketResponse> {
   const creds = loadCredentials();
   if (!creds) {
     throw new AxiError(
@@ -74,7 +88,7 @@ export async function bitbucketRequest(
   const text = await response.text();
   const payload = parseResponse(text);
   if (!response.ok) throw apiError(response.status, payload, creds);
-  return payload;
+  return { status: response.status, payload };
 }
 
 // Builds the multipart body from local files. Bytes are sent unchanged (no

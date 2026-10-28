@@ -1,6 +1,6 @@
 import { AxiError } from "axi-sdk-js";
 import { boolFlag, parseArgs, stringFlags } from "../args.js";
-import { bitbucketRequest, type Json } from "../client.js";
+import { bitbucketResponse, type Json } from "../client.js";
 import type { RepoContext } from "../context.js";
 import { expandApiPath, parseApiFields, parseUploads, scalar, truncateJson } from "./utils.js";
 
@@ -16,7 +16,7 @@ examples[4]:
   bitbucket-axi api GET /repositories/{workspace}/{repo}/refs/branches --field pagelen=10
   bitbucket-axi api POST /repositories/{workspace}/{repo}/downloads --file files=./screenshot.png
 notes[3]:
-  Image bytes are sent unchanged; use a distinct file name per image because re-uploading a name replaces it.
+  Image bytes are sent unchanged; use a distinct file name per image because re-uploading a name replaces it. An upload replies with no body, so the status appears as http_status.
   An upload never edits a pull request; patch the description that references the file separately.
   Reference an uploaded image from PR markdown as https://bitbucket.org/{workspace}/{repo}/downloads/<name>
 `;
@@ -54,14 +54,17 @@ export async function apiCommand(args: string[], ctx?: RepoContext): Promise<Rec
   const query = readOnly
     ? Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, scalar(value)]))
     : undefined;
-  const payload = await bitbucketRequest(path, {
+  const response = await bitbucketResponse(path, {
     method,
     ...(query ? { query } : {}),
     ...(files.length ? { files } : query ? {} : { body: fields }),
   });
   const full = boolFlag(parsed, "--full");
-  const truncated = truncateJson(payload, full);
+  const truncated = truncateJson(response.payload, full);
   return {
+    // A response with no body (a downloads upload, a 204 delete) leaves the
+    // status as the only evidence the request succeeded.
+    ...(response.payload === null ? { http_status: response.status } : {}),
     api_response: truncated.value,
     ...(truncated.changed ? { help: ["Run the same command with `--full` for complete string values"] } : {}),
   };

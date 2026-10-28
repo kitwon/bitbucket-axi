@@ -136,7 +136,7 @@ An upload never edits a pull request: until step 2 writes a description that ref
 
 Verifying an image is three claims, and each one needs its own evidence:
 
-1. The file is uploaded and its bytes are what you sent - download it and compare a checksum. The CLI prints text, so it has no byte download of its own; use a client that follows the redirect without handing your API token to that storage host.
+1. The file is uploaded and its bytes are what you sent. The upload replies with no body, so the CLI prints `http_status: 201` beside an empty `api_response`; a null body is not a failed write. Download the file and compare a checksum to prove the bytes. The CLI prints text, so it has no byte download of its own; use a client that follows the redirect without handing your API token to that storage host.
 2. The saved description contains the references you meant - `pr view <id> --full` for the text, and `rendered.description.html` from `bitbucket-axi api GET /repositories/{workspace}/{repo}/pullrequests/<id>` for one `<img>` per reference.
 3. A browser signed in with repository read access displays each image. Only this step shows what a viewer sees: the API token and the browser session are different credentials, so rendered `<img>` tags plus an anonymous `401` do not establish it.
 
