@@ -1,6 +1,6 @@
 import { AxiError } from "axi-sdk-js";
 import { stringFlag, type ParsedArgs } from "../args.js";
-import { isObject, type Json, type JsonObject } from "../client.js";
+import { isObject, type FileUpload, type Json, type JsonObject } from "../client.js";
 import type { RepoContext } from "../context.js";
 
 // Shared helpers extracted from the original monolithic commands module. Each
@@ -113,6 +113,24 @@ export function parseApiFields(values: string[]): JsonObject {
     result[key] = parseScalar(field.slice(equals + 1));
   }
   return result;
+}
+
+// Parses repeatable `--file <form-field>=<local path>` values into multipart
+// parts. The form field name is validated here; the path is checked when read.
+export function parseUploads(values: string[]): FileUpload[] {
+  return values.map((value) => {
+    const equals = value.indexOf("=");
+    if (equals < 1)
+      throw new AxiError(`invalid --file: ${value}`, "VALIDATION_ERROR", [
+        "Use `--file <form-field>=<local path>`, for example `--file files=./shot.png`",
+      ]);
+    const field = value.slice(0, equals);
+    if (!/^[A-Za-z0-9_.-]+$/.test(field))
+      throw new AxiError(`invalid multipart field name: ${field}`, "VALIDATION_ERROR");
+    const path = value.slice(equals + 1);
+    if (!path) throw new AxiError(`--file ${field} requires a path`, "VALIDATION_ERROR");
+    return { field, path };
+  });
 }
 
 export function parseScalar(value: string): Json {

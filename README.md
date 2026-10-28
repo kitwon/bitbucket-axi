@@ -75,7 +75,7 @@ When omitted, `bitbucket-axi` scans git remotes for a `bitbucket.org` repository
 | `pipeline list` | List pipeline runs |
 | `pipeline view <uuid>` | Show one pipeline run |
 | `pipeline run` | Trigger a branch or custom pipeline, with optional variables |
-| `api [method] <path>` | Call any Bitbucket Cloud REST API v2.0 path |
+| `api [method] <path>` | Call any Bitbucket Cloud REST API v2.0 path; `--file` sends a multipart upload |
 
 Run `bitbucket-axi --help` or `bitbucket-axi <command> --help` for the complete, concise flag reference.
 
@@ -107,6 +107,23 @@ bitbucket-axi api POST /repositories/{workspace}/{repo}/pipelines --field 'targe
 ```
 
 List commands default to compact fields. Add supported columns with `--fields`. Long descriptions and raw API string values are truncated by default; pass `--full` when complete content is needed.
+
+## Images in pull request descriptions
+
+Bitbucket Cloud's public REST API cannot upload images to a pull request: attachments exist only on Bitbucket's internal PR activity endpoint, and the request to expose them is still open ([BCLOUD-23909](https://jira.atlassian.com/browse/BCLOUD-23909), *Gathering Interest*; fetching them is [BCLOUD-22105](https://jira.atlassian.com/browse/BCLOUD-22105)). PR descriptions are Markdown, so the supported route is to upload the file to the repository's [Downloads](https://developer.atlassian.com/cloud/bitbucket/rest/api-group-downloads/) and reference that URL:
+
+```sh
+bitbucket-axi api POST /repositories/{workspace}/{repo}/downloads --file files=./screenshot.png
+bitbucket-axi api PUT /repositories/{workspace}/{repo}/pullrequests/42 --field description="$(cat body.md)"
+```
+
+with this line inside `body.md` (any workspace member who can read the repository loads it through their Bitbucket session):
+
+```md
+![screenshot](https://bitbucket.org/<workspace>/<repo>/downloads/screenshot.png)
+```
+
+`--file` sends `multipart/form-data` with the file's bytes unchanged and needs a token with the `write:repository:bitbucket` scope. The form field must be `files` for downloads, and a `GET`/`HEAD` request cannot carry files. Uploading a name that already exists replaces its bytes in place, so use a distinct name per image. Downloads require no PR-specific permission, but they outlive the PR: delete them with `bitbucket-axi api DELETE /repositories/{workspace}/{repo}/downloads/<name>`. Viewers of a private repository must be signed in with read access (an anonymous request is rejected with 401), while a public repository makes the image world-readable.
 
 ## Development
 

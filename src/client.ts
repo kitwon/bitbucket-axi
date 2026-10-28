@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 import { AxiError } from "axi-sdk-js";
 import { loadCredentials, type Credentials } from "./credentials.js";
 
@@ -6,10 +8,18 @@ export interface JsonObject {
   [key: string]: Json;
 }
 
+// One multipart/form-data file part: the form field Bitbucket expects (`files`
+// for downloads) and the local file whose exact bytes are sent.
+export interface FileUpload {
+  field: string;
+  path: string;
+}
+
 interface RequestOptions {
   method?: string;
   query?: Record<string, string | number | undefined>;
   body?: JsonObject;
+  files?: FileUpload[];
 }
 
 const API_ROOT = "https://api.bitbucket.org/2.0/";
@@ -37,6 +47,8 @@ export async function bitbucketRequest(
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
 
+  const multipart = options.files?.length ? buildMultipart(options.files) : undefined;
+
   let response: Response;
   try {
     response = await globalThis.fetch(url, {
@@ -44,9 +56,14 @@ export async function bitbucketRequest(
       headers: {
         Accept: "application/json",
         Authorization: basicAuthHeader(creds.email, creds.token),
+        // fetch derives the multipart boundary, so only JSON sets Content-Type.
         ...(options.body ? { "Content-Type": "application/json" } : {}),
       },
-      ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+      ...(multipart
+        ? { body: multipart }
+        : options.body
+          ? { body: JSON.stringify(options.body) }
+          : {}),
     });
   } catch {
     throw new AxiError("Could not reach Bitbucket Cloud", "NETWORK_ERROR", [
@@ -58,6 +75,30 @@ export async function bitbucketRequest(
   const payload = parseResponse(text);
   if (!response.ok) throw apiError(response.status, payload, creds);
   return payload;
+}
+
+// Builds the multipart body from local files. Bytes are sent unchanged (no
+// re-encoding), and only the base name travels as the part filename so a local
+// path never leaks into the request.
+function buildMultipart(files: FileUpload[]): FormData {
+  const form = new FormData();
+  for (const file of files) {
+    const name = basename(file.path);
+    if (!name || /[\r\n]/.test(name))
+      throw new AxiError(`invalid upload filename: ${file.path}`, "VALIDATION_ERROR", [
+        "Pass a file path whose base name has no line breaks",
+      ]);
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(file.path);
+    } catch {
+      throw new AxiError(`cannot read upload file: ${file.path}`, "VALIDATION_ERROR", [
+        "--file takes <form-field>=<local path>; check the path is readable",
+      ]);
+    }
+    form.append(file.field, new Blob([new Uint8Array(bytes)]), name);
+  }
+  return form;
 }
 
 // Validates an email/token pair against Bitbucket before it is stored. Uses the

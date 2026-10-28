@@ -2,18 +2,22 @@ import { AxiError } from "axi-sdk-js";
 import { boolFlag, parseArgs, stringFlags } from "../args.js";
 import { bitbucketRequest, type Json } from "../client.js";
 import type { RepoContext } from "../context.js";
-import { expandApiPath, parseApiFields, scalar, truncateJson } from "./utils.js";
+import { expandApiPath, parseApiFields, parseUploads, scalar, truncateJson } from "./utils.js";
 
 export const API_HELP = `usage: bitbucket-axi api [<method>] <path> [flags]
 description: Make an authenticated Bitbucket Cloud REST API v2.0 request.
 methods[6]:
   GET, POST, PUT, PATCH, DELETE, HEAD
-flags[3]:
-  --field <key=value> (repeatable), --full, -R/--repo <workspace/repo>
-examples[3]:
+flags[4]:
+  --field <key=value> (repeatable, JSON body or GET query), --file <form-field>=<local path> (repeatable, sends multipart/form-data), --full, -R/--repo <workspace/repo>
+examples[4]:
   bitbucket-axi api /repositories/{workspace}/{repo}
   bitbucket-axi api GET /user
   bitbucket-axi api GET /repositories/{workspace}/{repo}/refs/branches --field pagelen=10
+  bitbucket-axi api POST /repositories/{workspace}/{repo}/downloads --file files=./screenshot.png
+notes[2]:
+  Image bytes are sent unchanged; use a distinct file name per image because re-uploading a name replaces it.
+  Reference an uploaded image from PR markdown as https://bitbucket.org/{workspace}/{repo}/downloads/<name>
 `;
 
 export async function apiCommand(args: string[], ctx?: RepoContext): Promise<Record<string, Json>> {
@@ -21,6 +25,7 @@ export async function apiCommand(args: string[], ctx?: RepoContext): Promise<Rec
     args,
     [
       { name: "--field", repeatable: true },
+      { name: "--file", repeatable: true },
       { name: "--full", boolean: true },
     ],
     "bitbucket-axi api",
@@ -35,13 +40,23 @@ export async function apiCommand(args: string[], ctx?: RepoContext): Promise<Rec
     ]);
   const path = expandApiPath(positionals[0]!, ctx);
   const fields = parseApiFields(stringFlags(parsed, "--field"));
-  const query = method === "GET" || method === "HEAD"
+  const files = parseUploads(stringFlags(parsed, "--file"));
+  const readOnly = method === "GET" || method === "HEAD";
+  if (files.length && readOnly)
+    throw new AxiError("--file requires POST, PUT, or PATCH", "VALIDATION_ERROR", [
+      "Uploads are multipart/form-data request bodies; pick a write method",
+    ]);
+  if (files.length && Object.keys(fields).length)
+    throw new AxiError("--file cannot be combined with --field", "VALIDATION_ERROR", [
+      "Send upload parts only; multipart form fields alongside files are not supported",
+    ]);
+  const query = readOnly
     ? Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, scalar(value)]))
     : undefined;
   const payload = await bitbucketRequest(path, {
     method,
     ...(query ? { query } : {}),
-    ...(query ? {} : { body: fields }),
+    ...(files.length ? { files } : query ? {} : { body: fields }),
   });
   const full = boolFlag(parsed, "--full");
   const truncated = truncateJson(payload, full);
