@@ -2,6 +2,7 @@ import { AxiError } from "axi-sdk-js";
 import { boolFlag, parseArgs, positiveInt, stringFlag } from "../args.js";
 import { bitbucketRequest, type Json, type JsonObject } from "../client.js";
 import type { RepoContext } from "../context.js";
+import { assertPrBodyImages } from "../pr-body.js";
 import { actor, branch, compact, exactPositionals, jsonArray, nestedText, noPositionals, number, object, parseFields, positiveId, prListRow, repoHint, repoPath, requiredFlag, requireRepo, subcommandError, text, truncate } from "./utils.js";
 
 export const PR_HELP = `usage: bitbucket-axi pr <subcommand> [flags]
@@ -13,6 +14,8 @@ flags{view}:
   --full, -R/--repo <workspace/repo>
 flags{create}:
   --title <text>, --source <branch>, --destination <branch>, --body <text>, --close-source, -R/--repo <workspace/repo>
+notes[1]:
+  --body is checked before it is sent: every Downloads image it references must exist under its exact URL name.
 examples[3]:
   bitbucket-axi pr list --state open
   bitbucket-axi pr view 42 --full
@@ -113,11 +116,13 @@ async function prCreate(args: string[], ctx: RepoContext): Promise<Record<string
   const title = requiredFlag(parsed, "--title");
   const source = requiredFlag(parsed, "--source");
   const destination = stringFlag(parsed, "--destination");
+  const description = stringFlag(parsed, "--body");
+  if (description) await assertPrBodyImages(description);
   const body: JsonObject = {
     title,
     source: { branch: { name: source } },
     ...(destination ? { destination: { branch: { name: destination } } } : {}),
-    ...(stringFlag(parsed, "--body") ? { description: stringFlag(parsed, "--body")! } : {}),
+    ...(description ? { description } : {}),
     ...(boolFlag(parsed, "--close-source") ? { close_source_branch: true } : {}),
   };
   const raw = object(await bitbucketRequest(`${repoPath(ctx)}/pullrequests`, { method: "POST", body }));
