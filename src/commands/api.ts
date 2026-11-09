@@ -2,6 +2,7 @@ import { AxiError } from "axi-sdk-js";
 import { boolFlag, parseArgs, stringFlags } from "../args.js";
 import { bitbucketResponse, type Json } from "../client.js";
 import type { RepoContext } from "../context.js";
+import { assertPrBodyImages, isPullRequestDescriptionPath } from "../pr-body.js";
 import { expandApiPath, parseApiFields, parseUploads, scalar, truncateJson } from "./utils.js";
 
 export const API_HELP = `usage: bitbucket-axi api [<method>] <path> [flags]
@@ -15,9 +16,10 @@ examples[4]:
   bitbucket-axi api GET /user
   bitbucket-axi api GET /repositories/{workspace}/{repo}/refs/branches --field pagelen=10
   bitbucket-axi api POST /repositories/{workspace}/{repo}/downloads --file files=./screenshot.png
-notes[3]:
+notes[4]:
   Image bytes are sent unchanged; use a distinct file name per image because re-uploading a name replaces it. An upload replies with no body, so the status appears as http_status.
   An upload never edits a pull request; patch the description that references the file separately.
+  A pull request description is checked before it is sent: every Downloads image it references must exist under its exact URL name and hold a non-empty image, and a missing file stops the write.
   Reference an uploaded image from PR markdown as https://bitbucket.org/{workspace}/{repo}/downloads/<name>
 `;
 
@@ -54,6 +56,12 @@ export async function apiCommand(args: string[], ctx?: RepoContext): Promise<Rec
   const query = readOnly
     ? Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, scalar(value)]))
     : undefined;
+  // The raw API is the documented way to write a PR body, so it carries the same
+  // image check as `pr create --body` before any description mutation is sent.
+  const description = typeof fields["description"] === "string" ? fields["description"] : undefined;
+  if (!readOnly && description !== undefined && isPullRequestDescriptionPath(path)) {
+    await assertPrBodyImages(description);
+  }
   const response = await bitbucketResponse(path, {
     method,
     ...(query ? { query } : {}),

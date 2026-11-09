@@ -46,6 +46,41 @@ export async function bitbucketResponse(
   path: string,
   options: RequestOptions = {},
 ): Promise<BitbucketResponse> {
+  const { response, creds } = await openRequest(path, options);
+  const text = await response.text();
+  const payload = parseResponse(text);
+  if (!response.ok) throw apiError(response.status, payload, creds);
+  return { status: response.status, payload };
+}
+
+export interface StoredFile {
+  status: number;
+  contentType: string;
+  size: number;
+}
+
+// Reads a stored binary object (a Downloads file) so its bytes, not just its
+// HTTP status, can prove it is really there. A Downloads read redirects to
+// storage, and fetch drops Authorization on that cross-origin hop, so the API
+// token never reaches the storage host.
+export async function bitbucketFile(path: string): Promise<StoredFile> {
+  const { response, creds } = await openRequest(path);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!response.ok) {
+    const payload = parseResponse(new TextDecoder().decode(bytes));
+    throw apiError(response.status, payload, creds);
+  }
+  return {
+    status: response.status,
+    contentType: response.headers.get("content-type") ?? "",
+    size: bytes.length,
+  };
+}
+
+async function openRequest(
+  path: string,
+  options: RequestOptions = {},
+): Promise<{ response: Response; creds: Credentials }> {
   const creds = loadCredentials();
   if (!creds) {
     throw new AxiError(
@@ -85,10 +120,7 @@ export async function bitbucketResponse(
     ]);
   }
 
-  const text = await response.text();
-  const payload = parseResponse(text);
-  if (!response.ok) throw apiError(response.status, payload, creds);
-  return { status: response.status, payload };
+  return { response, creds };
 }
 
 // Builds the multipart body from local files. Bytes are sent unchanged (no
