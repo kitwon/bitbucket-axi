@@ -1,5 +1,12 @@
+import { readFileSync } from "node:fs";
 import { AxiError } from "axi-sdk-js";
-import { bitbucketFile, type StoredFile } from "./client.js";
+import {
+  bitbucketFile,
+  bitbucketRequest,
+  isObject,
+  type Json,
+  type StoredFile,
+} from "./client.js";
 
 // A pull request description is written as a single API mutation, so a broken
 // image reference reaches every reader at once. The observed failure is a body
@@ -29,9 +36,141 @@ const TEXTUAL_TYPE_RE = /^(?:text\/|application\/(?:json|xml|xhtml\+xml))/i;
 
 // Paths whose mutation writes the pull request body itself.
 const PR_BODY_PATH_RE = /^(?:2\.0\/)?repositories\/[^/]+\/[^/]+\/pullrequests(?:\/\d+)?\/?$/;
+const PR_ITEM_PATH_RE = /^(?:2\.0\/)?repositories\/[^/]+\/[^/]+\/pullrequests\/\d+$/;
+const SERIALIZED_DESCRIPTION_RE = /^(['"])description\1\s*:\s*([\s\S]+)$/;
 
 export function isPullRequestDescriptionPath(path: string): boolean {
   return PR_BODY_PATH_RE.test(path.replace(/^\/+/, ""));
+}
+
+// A caller that accidentally serializes a whole field object sends a complete
+// one-key envelope instead of Markdown. Only the whole value is rejected, so
+// prose and fenced examples that merely mention this shape stay valid.
+export function isSerializedDescriptionEnvelope(value: Json): boolean {
+  if (isObject(value)) {
+    const keys = Object.keys(value);
+    return keys.length === 1 && keys[0] === "description" && typeof value["description"] === "string";
+  }
+  if (typeof value !== "string") return false;
+
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return false;
+  const match = SERIALIZED_DESCRIPTION_RE.exec(trimmed.slice(1, -1).trim());
+  return match !== null && isQuotedString(match[2]!.trim());
+}
+
+// Fail before any request when the value is an envelope or is not text, then
+// retain the existing Downloads image checks for genuine Markdown.
+export async function validatePrDescription(description: Json): Promise<string> {
+  if (isSerializedDescriptionEnvelope(description)) {
+    throw new AxiError(
+      "pull request description is a serialized {description: ...} envelope",
+      "VALIDATION_ERROR",
+      [
+        "Pass the raw Markdown itself, not a printed or serialized description object",
+        "Use `--body-file <path>` on `pr create` or a raw PR-description `api` write so the file is sent unchanged",
+        "The description was not sent",
+      ],
+    );
+  }
+  if (typeof description !== "string") {
+    throw new AxiError("pull request description must be plain Markdown text", "VALIDATION_ERROR", [
+      "Send the Markdown string itself, or use `--body-file <path>`",
+      "The description was not sent",
+    ]);
+  }
+
+  await assertPrBodyImages(description);
+  return description;
+}
+
+// Reads a body file as exact UTF-8 text. JSON transport escapes control
+// characters, but parsing the JSON restores the original characters and
+// trailing newlines; no trim or platform-specific newline conversion is done.
+export function readPrBodyFile(path: string): string {
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(path);
+  } catch {
+    throw new AxiError(`cannot read --body-file: ${path}`, "VALIDATION_ERROR", [
+      "Pass a readable UTF-8 file path",
+      "The description was not sent",
+    ]);
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    throw new AxiError(`--body-file is not valid UTF-8: ${path}`, "VALIDATION_ERROR", [
+      "Save the Markdown as UTF-8 and retry",
+      "The description was not sent",
+    ]);
+  }
+}
+
+// For a collection POST, Bitbucket's response id names the new PR. Item writes
+// already contain their id. The caller then GETs this exact resource.
+export function pullRequestDescriptionReadbackPath(path: string, payload: Json): string {
+  const normalized = path.replace(/^\/+/, "").replace(/\/+$/, "");
+  if (PR_ITEM_PATH_RE.test(normalized)) return normalized;
+
+  if (
+    isObject(payload) &&
+    typeof payload["id"] === "number" &&
+    Number.isInteger(payload["id"]) &&
+    payload["id"] > 0
+  ) {
+    return `${normalized}/${payload["id"]}`;
+  }
+  throw new AxiError(
+    "Bitbucket created the pull request but did not return its id",
+    "API_ERROR",
+    [
+      "The description write succeeded; inspect the repository for the new pull request before retrying",
+      "The saved description could not be verified, so no retry or rollback was attempted",
+    ],
+  );
+}
+
+// A successful mutation is not proof of what was stored. Read the raw field
+// from the resource and require exact equality; never retry or roll back here,
+// because another actor may have written a newer description after our write.
+export async function assertPrDescriptionReadback(
+  path: string,
+  expected: string,
+): Promise<void> {
+  let raw: Json;
+  try {
+    raw = await bitbucketRequest(path);
+  } catch (error) {
+    const detail = error instanceof Error && error.message ? `: ${error.message}` : "";
+    throw new AxiError(
+      `could not verify the saved pull request description${detail}`,
+      "API_ERROR",
+      [
+        "The description write succeeded, but reading it back failed",
+        "Inspect the pull request before retrying; a retry can overwrite a newer edit",
+        "No retry or rollback was attempted",
+      ],
+    );
+  }
+
+  const saved = isObject(raw) && typeof raw["description"] === "string"
+    ? raw["description"]
+    : undefined;
+  if (saved === expected) return;
+
+  const savedSummary = saved === undefined
+    ? "Bitbucket returned no raw description"
+    : `saved ${saved.length} characters / ${Buffer.byteLength(saved, "utf8")} bytes`;
+  throw new AxiError(
+    "Bitbucket saved a different pull request description",
+    "API_ERROR",
+    [
+      `Expected ${expected.length} characters / ${Buffer.byteLength(expected, "utf8")} bytes; ${savedSummary}`,
+      "Inspect the saved description with `bitbucket-axi pr view <id> --full` before making another change",
+      "The saved text was left untouched; no retry or rollback was attempted because another edit may have arrived",
+    ],
+  );
 }
 
 // Fails closed before the request: every referenced Downloads file must exist
@@ -160,4 +299,20 @@ function isTableRow(value: string, index: number): boolean {
   const end = value.indexOf("\n", index);
   const line = value.slice(start, end === -1 ? undefined : end);
   return line.trim().startsWith("|");
+}
+
+function isQuotedString(value: string): boolean {
+  const quote = value[0];
+  if (quote !== "'" && quote !== '"') return false;
+  for (let index = 1; index < value.length; index++) {
+    const character = value[index];
+    if (character === "\\") {
+      index++;
+      continue;
+    }
+    if (character !== quote) continue;
+    const rest = value.slice(index + 1).trim();
+    return rest === "" || rest === ",";
+  }
+  return false;
 }

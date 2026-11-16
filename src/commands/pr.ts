@@ -2,7 +2,11 @@ import { AxiError } from "axi-sdk-js";
 import { boolFlag, parseArgs, positiveInt, stringFlag } from "../args.js";
 import { bitbucketRequest, type Json, type JsonObject } from "../client.js";
 import type { RepoContext } from "../context.js";
-import { assertPrBodyImages } from "../pr-body.js";
+import {
+  assertPrDescriptionReadback,
+  readPrBodyFile,
+  validatePrDescription,
+} from "../pr-body.js";
 import { actor, branch, compact, exactPositionals, jsonArray, nestedText, noPositionals, number, object, parseFields, positiveId, prListRow, repoHint, repoPath, requiredFlag, requireRepo, subcommandError, text, truncate } from "./utils.js";
 
 export const PR_HELP = `usage: bitbucket-axi pr <subcommand> [flags]
@@ -13,9 +17,11 @@ flags{list}:
 flags{view}:
   --full, -R/--repo <workspace/repo>
 flags{create}:
-  --title <text>, --source <branch>, --destination <branch>, --body <text>, --close-source, -R/--repo <workspace/repo>
-notes[1]:
+  --title <text>, --source <branch>, --destination <branch>, --body <text> | --body-file <path>, --close-source, -R/--repo <workspace/repo>
+notes[3]:
+  --body and --body-file are mutually exclusive. The file is read as UTF-8, with its Markdown and trailing newline unchanged.
   --body is checked before it is sent: every Downloads image it references must exist under its exact URL name.
+  The saved description is read back and must exactly equal the input; serialized {description: ...} envelopes are rejected before sending.
 examples[3]:
   bitbucket-axi pr list --state open
   bitbucket-axi pr view 42 --full
@@ -108,6 +114,7 @@ async function prCreate(args: string[], ctx: RepoContext): Promise<Record<string
       { name: "--source" },
       { name: "--destination" },
       { name: "--body" },
+      { name: "--body-file" },
       { name: "--close-source", boolean: true },
     ],
     "bitbucket-axi pr create",
@@ -116,17 +123,42 @@ async function prCreate(args: string[], ctx: RepoContext): Promise<Record<string
   const title = requiredFlag(parsed, "--title");
   const source = requiredFlag(parsed, "--source");
   const destination = stringFlag(parsed, "--destination");
-  const description = stringFlag(parsed, "--body");
-  if (description) await assertPrBodyImages(description);
+  const bodyText = stringFlag(parsed, "--body");
+  const bodyFile = stringFlag(parsed, "--body-file");
+  if (bodyText !== undefined && bodyFile !== undefined) {
+    throw new AxiError("--body and --body-file cannot be combined", "VALIDATION_ERROR", [
+      "Choose --body for an inline value or --body-file for a UTF-8 Markdown file",
+      "The description was not sent",
+    ]);
+  }
+  const intendedDescription = bodyFile !== undefined
+    ? readPrBodyFile(bodyFile)
+    : bodyText;
+  const description = intendedDescription === undefined
+    ? undefined
+    : await validatePrDescription(intendedDescription);
   const body: JsonObject = {
     title,
     source: { branch: { name: source } },
     ...(destination ? { destination: { branch: { name: destination } } } : {}),
-    ...(description ? { description } : {}),
+    ...(description !== undefined ? { description } : {}),
     ...(boolFlag(parsed, "--close-source") ? { close_source_branch: true } : {}),
   };
   const raw = object(await bitbucketRequest(`${repoPath(ctx)}/pullrequests`, { method: "POST", body }));
   const id = number(raw, "id");
+  if (description !== undefined) {
+    if (id === undefined) {
+      throw new AxiError(
+        "Bitbucket created the pull request but did not return its id",
+        "API_ERROR",
+        [
+          "The description write succeeded; inspect the repository before retrying",
+          "The saved description could not be verified, so no retry or rollback was attempted",
+        ],
+      );
+    }
+    await assertPrDescriptionReadback(`${repoPath(ctx)}/pullrequests/${id}`, description);
+  }
   return {
     pull_request: compact({
       id,

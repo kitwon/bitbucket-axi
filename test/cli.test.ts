@@ -38,6 +38,18 @@ describe("CLI", () => {
     expect(output).toContain("config set|status|clear");
   });
 
+  it("documents body files and exact description verification", async () => {
+    await main({ argv: ["pr", "--help"], stdout });
+    expect(output).toContain("--body-file <path>");
+    expect(output).toContain("read back and must exactly equal");
+
+    output = "";
+    await main({ argv: ["api", "--help"], stdout });
+    expect(output).toContain("--body-file <path>");
+    expect(output).toContain("read back for exact equality");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("prints the package version", async () => {
     await main({ argv: ["--version"], stdout });
     expect(output).toBe("0.1.0\n");

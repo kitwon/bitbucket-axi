@@ -272,7 +272,9 @@ describe("Bitbucket commands", () => {
   });
 
   it("sends PR description updates as PUT JSON with the stored API credential", async () => {
-    fetchMock.mockResolvedValue(response({ id: 42, description: "Updated safely" }));
+    fetchMock
+      .mockResolvedValueOnce(response({ id: 42, description: "Updated safely" }))
+      .mockResolvedValueOnce(response({ id: 42, description: "Updated safely" }));
     await apiCommand([
       "PUT",
       "/repositories/{workspace}/{repo}/pullrequests/42",
@@ -291,6 +293,10 @@ describe("Bitbucket commands", () => {
       "Content-Type": "application/json",
     });
     expect(JSON.parse(String(init?.body))).toEqual({ description: "Updated safely" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1]![0])).toBe(
+      "https://api.bitbucket.org/2.0/repositories/acme/widgets/pullrequests/42",
+    );
   });
 
   it("preserves sanitized details when Bitbucket denies a PR description update", async () => {

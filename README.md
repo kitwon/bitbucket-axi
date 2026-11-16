@@ -98,6 +98,7 @@ bitbucket-axi repo view
 bitbucket-axi pr list --state open --fields source,destination
 bitbucket-axi pr view 42 --full
 bitbucket-axi pr create --title "Fix auth" --source fix/auth --destination main --body "Resolves token refresh"
+bitbucket-axi pr create --title "Fix auth" --source fix/auth --destination main --body-file body.md
 bitbucket-axi pipeline list --fields commit,url
 bitbucket-axi pipeline run --branch main
 bitbucket-axi pipeline run --branch main --custom "Deploy production"
@@ -118,10 +119,10 @@ bitbucket-axi api POST /repositories/{workspace}/{repo}/downloads --file files=.
 
 # 2. read the current description, add your section to it, write the whole body back
 bitbucket-axi pr view 42 --full
-bitbucket-axi api PUT /repositories/{workspace}/{repo}/pullrequests/42 --field description="$(cat body.md)"
+bitbucket-axi api PUT /repositories/{workspace}/{repo}/pullrequests/42 --body-file body.md
 
-# 3. read the saved description back
-bitbucket-axi pr view 42 --full
+# 3. inspect the rendered description and its images
+bitbucket-axi api GET /repositories/{workspace}/{repo}/pullrequests/42 --full
 ```
 
 with this line inside `body.md`:
@@ -130,9 +131,15 @@ with this line inside `body.md`:
 ![screenshot](https://bitbucket.org/<workspace>/<repo>/downloads/screenshot.png)
 ```
 
-An upload never edits a pull request: until step 2 writes a description that references the file, the PR shows no image. Take the body you patch from a fresh `pr view <id> --full` read - a read without `--full` truncates long descriptions, and someone else may have edited the body since your last look. `"$(cat body.md)"` arrives as a single argument, so quotes, backticks and `$` in the body stay literal.
+An upload never edits a pull request: until step 2 writes a description that references the file, the PR shows no image. Take the body you patch from a fresh `pr view <id> --full` read - a read without `--full` truncates long descriptions, and someone else may have edited the body since your last look.
+
+`--body-file` reads the file as UTF-8 and sends its Markdown unchanged, including real newlines, quotes, backticks, Unicode, and any trailing newline. On `pr create` it is mutually exclusive with `--body`. On `api` it is a dedicated PR-description input for `POST`/`PUT`/`PATCH` on `/repositories/.../pullrequests` or `/repositories/.../pullrequests/<id>`; it cannot be combined with `--field description=...` or `--file`, and it does not turn arbitrary API fields into file inputs.
+
+Before sending a pull request description, `bitbucket-axi` rejects a complete one-key serialized envelope such as the Python repr `{'description': "..."}` or the equivalent JSON object. This only matches when the whole description is the envelope: prose and fenced examples may mention either shape. The CLI never evaluates a Python literal.
 
 Before a description is written, `bitbucket-axi` reads every `https://bitbucket.org/<workspace>/<repo>/downloads/<name>` image the body references and refuses to send the body when one is missing, empty, or stored as text; the error names the exact file to upload. The same check covers `pr create --body` and a `description` field sent through `api` to `/repositories/.../pullrequests` or `/repositories/.../pullrequests/<id>`. It also stops Markdown faults that would drop or split the reference: an unclosed or empty image destination, a `*`/`?` pattern instead of a literal name, and an unescaped `|` in a table cell's image alt text. It never uploads or renames anything for you, and image syntax inside a code span or fenced block is ignored because Markdown renders it literally.
+
+After a successful description mutation, the CLI GETs the raw pull request and requires the saved `description` to be exactly equal to the intended string. A missing or failed readback and any mismatch fail the command with an explicit unverified/error result. The CLI does not trim a trailing newline to make that check pass, and it never retries or rolls back a mismatch because another actor may already have written a newer description.
 
 The failure this prevents is silent: the upload keeps its source file name while the body references the intended name, so every image is a permanent 404 in an otherwise valid body. Give the uploaded file the exact base name the body uses.
 
@@ -141,7 +148,7 @@ The failure this prevents is silent: the upload keeps its source file name while
 Verifying an image is three claims, and each one needs its own evidence:
 
 1. The file is uploaded and its bytes are what you sent. The upload replies with no body, so the CLI prints `http_status: 201` beside an empty `api_response`; a null body is not a failed write. Download the file and compare a checksum to prove the bytes; the pre-write check only proves the name resolves to a non-empty, non-text file. The CLI prints text, so it has no byte download of its own; use a client that follows the redirect without handing your API token to that storage host.
-2. The saved description contains the references you meant - `pr view <id> --full` for the text, and `rendered.description.html` from `bitbucket-axi api GET /repositories/{workspace}/{repo}/pullrequests/<id>` for one `<img>` per reference.
+2. The saved raw description exactly equals what you sent - the write command now proves this before reporting success. `pr view <id> --full` shows that text, and `rendered.description.html` from `bitbucket-axi api GET /repositories/{workspace}/{repo}/pullrequests/<id>` shows one `<img>` per reference.
 3. A browser signed in with repository read access displays each image. Only this step shows what a viewer sees: the API token and the browser session are different credentials, so rendered `<img>` tags plus an anonymous `401` do not establish it.
 
 Downloads need no pull-request permission, and they outlive the PR while the description keeps depending on them. Delete one with `bitbucket-axi api DELETE /repositories/{workspace}/{repo}/downloads/<name>` only once nothing references it; finishing or merging the PR is not on its own a reason to delete. Viewers of a private repository must be signed in with read access (an anonymous request is rejected with 401), while a public repository makes the image world-readable.

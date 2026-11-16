@@ -37,6 +37,7 @@ describe("PR body image precheck", () => {
   let stored: Map<string, Stored>;
   let requests: string[];
   let mutations: Record<string, unknown>[];
+  let storedDescription: string;
 
   beforeEach(() => {
     vi.stubGlobal("fetch", fetchMock);
@@ -46,6 +47,7 @@ describe("PR body image precheck", () => {
     stored = new Map();
     requests = [];
     mutations = [];
+    storedDescription = "";
 
     fetchMock.mockImplementation((input, init) => {
       const url = new URL(String(input));
@@ -62,10 +64,12 @@ describe("PR body image precheck", () => {
         );
       }
       if (method !== "GET") {
-        mutations.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-        return Promise.resolve(response({ id: 42, description: "stored" }));
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        mutations.push(body);
+        if (typeof body["description"] === "string") storedDescription = body["description"];
+        return Promise.resolve(response({ id: 42, description: storedDescription }));
       }
-      return Promise.resolve(response({ id: 42, description: "stored" }));
+      return Promise.resolve(response({ id: 42, description: storedDescription }));
     });
   });
 
@@ -91,7 +95,10 @@ describe("PR body image precheck", () => {
 
   it("sends a description with no image reference without reading a download", async () => {
     await putDescription("# Summary\n\nNo screenshots here.");
-    expect(requests).toEqual(["PUT /2.0/repositories/acme/widgets/pullrequests/42"]);
+    expect(requests).toEqual([
+      "PUT /2.0/repositories/acme/widgets/pullrequests/42",
+      "GET /2.0/repositories/acme/widgets/pullrequests/42",
+    ]);
     expect(mutations).toHaveLength(1);
   });
 
@@ -111,6 +118,7 @@ describe("PR body image precheck", () => {
       "GET /2.0/repositories/acme/widgets/downloads/shot-desktop.png",
       "GET /2.0/repositories/acme/widgets/downloads/shot-mobile.png",
       "PUT /2.0/repositories/acme/widgets/pullrequests/42",
+      "GET /2.0/repositories/acme/widgets/pullrequests/42",
     ]);
     expect(mutations[0]).toEqual({ description: body });
   });
@@ -204,13 +212,19 @@ describe("PR body image precheck", () => {
 
     await putDescription(body);
 
-    expect(requests).toEqual(["PUT /2.0/repositories/acme/widgets/pullrequests/42"]);
+    expect(requests).toEqual([
+      "PUT /2.0/repositories/acme/widgets/pullrequests/42",
+      "GET /2.0/repositories/acme/widgets/pullrequests/42",
+    ]);
     expect(mutations).toHaveLength(1);
   });
 
   it("leaves a non-Downloads image URL alone", async () => {
     await putDescription("![badge](https://img.shields.io/badge/build-passing.svg)");
-    expect(requests).toEqual(["PUT /2.0/repositories/acme/widgets/pullrequests/42"]);
+    expect(requests).toEqual([
+      "PUT /2.0/repositories/acme/widgets/pullrequests/42",
+      "GET /2.0/repositories/acme/widgets/pullrequests/42",
+    ]);
   });
 
   it("checks a body written by pr create", async () => {
