@@ -72,12 +72,15 @@ When omitted, `bitbucket-axi` scans git remotes for a `bitbucket.org` repository
 | `pr list` | List pull requests |
 | `pr view <id>` | Show one pull request; use `--full` for complete text |
 | `pr create` | Create a pull request |
+| `pr watch <id>` | Follow the PR head and report the native pipelines attached to that exact PR and commit |
 | `pipeline list` | List pipeline runs |
 | `pipeline view <uuid>` | Show one pipeline run |
 | `pipeline run` | Trigger a branch or custom pipeline, with optional variables |
 | `api [method] <path>` | Call any Bitbucket Cloud REST API v2.0 path; `--file` sends a multipart upload |
 
 Run `bitbucket-axi --help` or `bitbucket-axi <command> --help` for the complete, concise flag reference.
+
+`pr watch` selects only native `pipeline_pullrequest_target` runs whose full commit hash and pull request ID match the watched PR. It follows head changes, keeps the newest run per pipeline selector, and rechecks the head before reporting a terminal result. Progress goes to stderr; one result goes to stdout. Exit codes: `0` passed, `1` failed/error/stopped/expired/unknown, `3` inconclusive (PR closed, or a plausible target missing its PR identity), `8` still active, no matching pipeline, or rate limited at the deadline, `130` interrupted. `--timeout 0` runs one polling round without waiting.
 
 ## Git over HTTPS (optional)
 
@@ -99,6 +102,7 @@ bitbucket-axi pr list --state open --fields source,destination
 bitbucket-axi pr view 42 --full
 bitbucket-axi pr create --title "Fix auth" --source fix/auth --destination main --body "Resolves token refresh"
 bitbucket-axi pr create --title "Fix auth" --source fix/auth --destination main --body-file body.md
+bitbucket-axi pr watch 42 --interval 10 --timeout 1800
 bitbucket-axi pipeline list --fields commit,url
 bitbucket-axi pipeline run --branch main
 bitbucket-axi pipeline run --branch main --custom "Deploy production"

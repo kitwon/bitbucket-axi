@@ -204,6 +204,19 @@ export function positiveId(value: string, label: string): number {
   return Number(value);
 }
 
+export function boundedInt(
+  value: string | undefined,
+  flag: string,
+  min: number,
+  max: number,
+  fallback: number,
+): number {
+  if (value === undefined) return fallback;
+  if (!/^\d+$/.test(value) || Number(value) < min || Number(value) > max)
+    throw new AxiError(`${flag} must be an integer from ${min} to ${max}`, "VALIDATION_ERROR");
+  return Number(value);
+}
+
 export function noPositionals(parsed: ParsedArgs, command: string): void {
   if (parsed.positionals.length)
     throw new AxiError(`unexpected argument: ${parsed.positionals[0]}`, "VALIDATION_ERROR", [

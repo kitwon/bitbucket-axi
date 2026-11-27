@@ -7,36 +7,68 @@ import {
   readPrBodyFile,
   validatePrDescription,
 } from "../pr-body.js";
-import { actor, branch, compact, exactPositionals, jsonArray, nestedText, noPositionals, number, object, parseFields, positiveId, prListRow, repoHint, repoPath, requiredFlag, requireRepo, subcommandError, text, truncate } from "./utils.js";
+import { actor, branch, boundedInt, compact, exactPositionals, jsonArray, nestedText, noPositionals, number, object, parseFields, positiveId, prListRow, repoHint, repoPath, requiredFlag, requireRepo, subcommandError, text, truncate } from "./utils.js";
+import { watchPullRequest } from "./pr-watch.js";
 
 export const PR_HELP = `usage: bitbucket-axi pr <subcommand> [flags]
-subcommands[3]:
-  list, view <id>, create
+subcommands[4]:
+  list, view <id>, create, watch <id>
 flags{list}:
   --state <open|merged|declined|superseded|all> (default open), --limit <1-100> (default 30), --fields <source,destination,created,url,draft,comments>, -R/--repo <workspace/repo>
 flags{view}:
   --full, -R/--repo <workspace/repo>
 flags{create}:
   --title <text>, --source <branch>, --destination <branch>, --body <text> | --body-file <path>, --close-source, -R/--repo <workspace/repo>
-notes[3]:
+flags{watch}:
+  --interval <seconds 1-300> (default 10), --timeout <seconds 0-86400> (default 1800; 0 runs one polling round), -R/--repo <workspace/repo>
+notes[4]:
   --body and --body-file are mutually exclusive. The file is read as UTF-8, with its Markdown and trailing newline unchanged.
   --body is checked before it is sent: every Downloads image it references must exist under its exact URL name.
   The saved description is read back and must exactly equal the input; serialized {description: ...} envelopes are rejected before sending.
-examples[3]:
+  watch follows the pull request head and reports native Pipelines attached to this exact pull request and commit. Progress goes to stderr; the final result goes to stdout. Exit codes: 0 passed, 1 failed/stopped/expired/unknown, 3 inconclusive (PR closed or unidentified target), 8 still active, no matching pipeline, or rate limited at the deadline, 130 interrupted.
+examples[4]:
   bitbucket-axi pr list --state open
   bitbucket-axi pr view 42 --full
   bitbucket-axi pr create --title "Fix auth" --source fix/auth --destination main
+  bitbucket-axi pr watch 42 --interval 10 --timeout 1800
 `;
 
 const PR_LIST_FIELDS = new Set(["source", "destination", "created", "url", "draft", "comments"]);
 
 export async function prCommand(args: string[], ctx?: RepoContext): Promise<Record<string, Json>> {
   const subcommand = args[0];
-  if (!subcommand) throw subcommandError("pr", ["list", "view", "create"]);
+  if (!subcommand) throw subcommandError("pr", ["list", "view", "create", "watch"]);
   if (subcommand === "list") return prList(args.slice(1), requireRepo(ctx));
   if (subcommand === "view") return prView(args.slice(1), requireRepo(ctx));
   if (subcommand === "create") return prCreate(args.slice(1), requireRepo(ctx));
-  throw subcommandError("pr", ["list", "view", "create"], subcommand);
+  if (subcommand === "watch") return prWatch(args.slice(1), requireRepo(ctx));
+  throw subcommandError("pr", ["list", "view", "create", "watch"], subcommand);
+}
+
+async function prWatch(args: string[], ctx: RepoContext): Promise<Record<string, Json>> {
+  const parsed = parseArgs(
+    args,
+    [{ name: "--interval" }, { name: "--timeout" }],
+    "bitbucket-axi pr watch",
+  );
+  exactPositionals(parsed, 1, "bitbucket-axi pr watch <id>");
+  const id = positiveId(parsed.positionals[0]!, "pull request id");
+  const interval = boundedInt(stringFlag(parsed, "--interval"), "--interval", 1, 300, 10);
+  const timeout = boundedInt(stringFlag(parsed, "--timeout"), "--timeout", 0, 86400, 1800);
+  const controller = new AbortController();
+  const onSigint = () => controller.abort();
+  process.once("SIGINT", onSigint);
+  try {
+    const outcome = await watchPullRequest(ctx, id, {
+      intervalSeconds: interval,
+      timeoutSeconds: timeout,
+      signal: controller.signal,
+    });
+    if (outcome.exitCode !== 0) process.exitCode = outcome.exitCode;
+    return outcome.output;
+  } finally {
+    process.off("SIGINT", onSigint);
+  }
 }
 
 async function prList(args: string[], ctx: RepoContext): Promise<Record<string, Json>> {
