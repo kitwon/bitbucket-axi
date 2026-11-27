@@ -24,7 +24,7 @@ import { resolveRepo, type RepoContext } from "./context.js";
 export const DESCRIPTION = "Inspect repositories, pull requests, and pipelines in Bitbucket Cloud with agent-efficient output.";
 export const TOP_HELP = `usage: bitbucket-axi [command] [args] [flags]
 commands[6]:
-  repo view, pr list|view|create, pipeline list|view|run, api, config set|status|clear|git, credential-helper
+  repo view, pr list|view|create|watch, pipeline list|view|run, api, config set|status|clear|git, credential-helper
 flags[3]:
   -R/--repo <workspace/repo> (after command), --help, -v/-V/--version
 examples[4]:

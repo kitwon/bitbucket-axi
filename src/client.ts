@@ -20,6 +20,21 @@ interface RequestOptions {
   query?: Record<string, string | number | undefined>;
   body?: JsonObject;
   files?: FileUpload[];
+  signal?: AbortSignal;
+}
+
+// An HTTP failure with the status and Retry-After metadata a long-running
+// caller needs. The message and suggestions are already redacted.
+export class BitbucketHttpError extends AxiError {
+  constructor(
+    message: string,
+    code: string,
+    suggestions: string[],
+    readonly status: number,
+    readonly retryAfterSeconds: number | undefined,
+  ) {
+    super(message, code, suggestions);
+  }
 }
 
 const API_ROOT = "https://api.bitbucket.org/2.0/";
@@ -49,7 +64,8 @@ export async function bitbucketResponse(
   const { response, creds } = await openRequest(path, options);
   const text = await response.text();
   const payload = parseResponse(text);
-  if (!response.ok) throw apiError(response.status, payload, creds);
+  if (!response.ok)
+    throw apiError(response.status, payload, creds, response.headers.get("retry-after"));
   return { status: response.status, payload };
 }
 
@@ -68,7 +84,7 @@ export async function bitbucketFile(path: string): Promise<StoredFile> {
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (!response.ok) {
     const payload = parseResponse(new TextDecoder().decode(bytes));
-    throw apiError(response.status, payload, creds);
+    throw apiError(response.status, payload, creds, response.headers.get("retry-after"));
   }
   return {
     status: response.status,
@@ -113,8 +129,14 @@ async function openRequest(
         : options.body
           ? { body: JSON.stringify(options.body) }
           : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
     });
   } catch {
+    if (options.signal?.aborted) {
+      throw new AxiError("Bitbucket request was cancelled", "NETWORK_ERROR", [
+        "The caller stopped the watch or reached its deadline",
+      ]);
+    }
     throw new AxiError("Could not reach Bitbucket Cloud", "NETWORK_ERROR", [
       "Check network access to api.bitbucket.org and retry",
     ]);
@@ -219,31 +241,54 @@ function parseResponse(text: string): Json {
   }
 }
 
-function apiError(status: number, payload: Json, creds: Credentials): AxiError {
+function apiError(
+  status: number,
+  payload: Json,
+  creds: Credentials,
+  retryAfter: string | null,
+): BitbucketHttpError {
   const detail = apiErrorDetail(payload, creds);
   const withDetail = (message: string) => detail ? `${message}: ${detail}` : message;
+  const retryAfterSeconds = parseRetryAfter(retryAfter);
   if (status === 401) {
-    return new AxiError(withDetail("Bitbucket authentication failed"), "AUTH_ERROR", [
+    return new BitbucketHttpError(withDetail("Bitbucket authentication failed"), "AUTH_ERROR", [
       "The stored API token was rejected; run `bitbucket-axi config set` to update it",
-    ]);
+    ], status, retryAfterSeconds);
   }
   if (status === 403) {
-    return new AxiError(withDetail("Bitbucket denied this operation"), "PERMISSION_ERROR", [
+    return new BitbucketHttpError(withDetail("Bitbucket denied this operation"), "PERMISSION_ERROR", [
       detail
         ? "Check the API token scope and the authenticated account's permission for this resource"
         : "Grant the API token the repository, pull request, or pipeline scope this command needs",
-    ]);
+    ], status, retryAfterSeconds);
   }
   if (status === 404) {
-    return new AxiError(withDetail("Bitbucket resource not found"), "NOT_FOUND", [
+    return new BitbucketHttpError(withDetail("Bitbucket resource not found"), "NOT_FOUND", [
       "Check the repository selector and resource identifier",
-    ]);
+    ], status, retryAfterSeconds);
+  }
+  if (status === 429) {
+    return new BitbucketHttpError(withDetail("Bitbucket rate limit exceeded"), "RATE_LIMIT", [
+      "Wait for the Retry-After interval, then retry",
+    ], status, retryAfterSeconds);
   }
 
-  return new AxiError(
+  return new BitbucketHttpError(
     `Bitbucket API request failed (${status})${detail ? `: ${detail}` : ""}`,
     "API_ERROR",
+    [],
+    status,
+    retryAfterSeconds,
   );
+}
+
+// Bitbucket sends Retry-After as seconds; an HTTP date is accepted as well.
+function parseRetryAfter(value: string | null): number | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  if (/^\d+$/.test(trimmed)) return Number(trimmed);
+  const date = Date.parse(trimmed);
+  return Number.isNaN(date) ? undefined : Math.max(0, Math.ceil((date - Date.now()) / 1000));
 }
 
 function apiErrorDetail(payload: Json, creds: Credentials): string {

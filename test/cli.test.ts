@@ -42,6 +42,11 @@ describe("CLI", () => {
     await main({ argv: ["pr", "--help"], stdout });
     expect(output).toContain("--body-file <path>");
     expect(output).toContain("read back and must exactly equal");
+    expect(output).toContain("list, view <id>, create, watch <id>");
+    expect(output).toContain("pr watch 42 --interval 10 --timeout 1800");
+    expect(output).toContain("0 passed, 1 failed/stopped/expired/unknown, 3 inconclusive");
+    expect(output).toContain("8 still active");
+    expect(output).toContain("130 interrupted");
 
     output = "";
     await main({ argv: ["api", "--help"], stdout });
